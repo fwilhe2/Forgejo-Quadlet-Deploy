@@ -1,0 +1,93 @@
+---
+- name: Forgejo Quadlet Deploy
+  hosts: forgejo_servers
+  become: true
+  vars:
+    base_dir: "/opt/forgejo"
+    forgejo_uid: 1000
+    postgres_uid: 65532
+
+  tasks:
+    - name: Install Podman and pwgen
+      dnf:
+        name: [podman, acl, pwgen]
+        state: present
+
+    - name: Create Directories and Set ACLs
+      block:
+        - file:
+            path: "{{ item.p }}"
+            state: directory
+            mode: "0755"
+          loop:
+            [{ p: "{{ base_dir }}/forgejo" }, { p: "{{ base_dir }}/postgres" }]
+
+        - ansible.posix.acl:
+            path: "{{ item.p }}"
+            entity: "{{ item.u }}"
+            etype: user
+            permissions: rwx
+            state: present
+          loop:
+            [
+              { p: "{{ base_dir }}/forgejo", u: "{{ forgejo_uid }}" },
+              { p: "{{ base_dir }}/postgres", u: "{{ postgres_uid }}" },
+            ]
+
+    - name: Ensure Secret exists
+      shell: |
+        podman secret exists forgejo_db_password || \
+        (pwgen -s 32 1 | tr -d '\n' | podman secret create forgejo_db_password -)
+      register: secret_out
+      changed_when: "'created' in secret_out.stdout"
+
+    - name: Deploy Quadlet Files
+      copy:
+        dest: "/etc/containers/systemd/{{ item.name }}"
+        content: "{{ item.content }}"
+      loop:
+        - name: forgejo-backend.network
+          content: |
+            [Network]
+            Internal=true
+
+        - name: forgejo-db.container
+          content: |
+            [Container]
+            ContainerName=forgejo-db
+            Image=cgr.dev/chainguard/postgres:latest
+            Network=forgejo-backend.network
+            PublishPort=3000:3000
+            Environment=POSTGRES_USER=forgejo POSTGRES_DB=forgejo
+            Secret=forgejo_db_password,type=env,target=POSTGRES_PASSWORD
+            Volume={{ base_dir }}/postgres:/var/lib/postgresql/data:z
+            [Service]
+            Restart=always
+
+        - name: forgejo-server.container
+          content: |
+            [Container]
+            ContainerName=forgejo-server
+            Image=codeberg.org/forgejo/forgejo:14
+            Network=forgejo-backend.network
+            Network=frontend
+            Environment=FORGEJO__database__DB_TYPE=postgres FORGEJO__database__HOST=forgejo-db:5432
+            Environment=FORGEJO__database__NAME=forgejo FORGEJO__database__USER=forgejo
+            Environment=USER_UID={{ forgejo_uid }} USER_GID={{ forgejo_uid }}
+            Secret=forgejo_db_password,type=env,target=FORGEJO__database__PASSWD
+            Volume={{ base_dir }}/forgejo:/data:z
+            [Service]
+            Restart=always
+      notify: restart-forgejo
+
+  handlers:
+    - name: restart-forgejo
+      systemd:
+        daemon_reload: true
+        # List both services here
+        name: "{{ item }}"
+        state: restarted
+        enabled: true
+      loop:
+        - forgejo-db.service
+        - forgejo-server.service

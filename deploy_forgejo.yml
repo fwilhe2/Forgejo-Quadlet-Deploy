@@ -57,7 +57,6 @@
             ContainerName=forgejo-db
             Image=cgr.dev/chainguard/postgres:latest
             Network=forgejo-backend.network
-            PublishPort=3000:3000
             Environment=POSTGRES_USER=forgejo POSTGRES_DB=forgejo
             Secret=forgejo_db_password,type=env,target=POSTGRES_PASSWORD
             Volume={{ base_dir }}/postgres:/var/lib/postgresql/data:z
@@ -69,6 +68,7 @@
             [Container]
             ContainerName=forgejo-server
             Image=codeberg.org/forgejo/forgejo:14
+            PublishPort=3000:3000
             Network=forgejo-backend.network
             Network=frontend
             Environment=FORGEJO__database__DB_TYPE=postgres FORGEJO__database__HOST=forgejo-db:5432
